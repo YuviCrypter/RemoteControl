@@ -1,0 +1,87 @@
+.layout-editor-container {
+    display: flex;
+    flex-direction: row;
+    height: 100vh;
+}
+
+.editor-controls {
+    width: 250px;
+    padding: 10px;
+    border-right: 1px solid #ccc;
+    overflow-y: auto;
+    flex-shrink: 0;
+}
+
+.editor-grid {
+    flex-grow: 1;
+    background-color: #f0f0f0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: auto;
+}
+
+.layout-canvas {
+    width: 812px;
+    height: 375px;
+    background-color: #fff;
+    border: 1px solid #999;
+    position: relative;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.draggable-item {
+    width: 80px;
+    height: 80px;
+    background: #ccc;
+    border: 1px solid #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: absolute;
+}
+
+.draggable-item.selected {
+    border: 2px solid blue;
+    z-index: 1;
+}
+
+.draggable-item .remove {
+    position: absolute;
+    right: 2px;
+    top: 0;
+    cursor: pointer;
+    background: #f44336;
+    color: white;
+    border: none;
+    padding: 2px 5px;
+    z-index: 2;
+}
+
+.button-content {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    padding: 10px;
+    box-sizing: border-box;
+    font-size: 24px;
+}
+
+.item-properties {
+    margin-top: 20px;
+}
+
+.item-properties label {
+    display: block;
+    margin-top: 10px;
+}
+
+.item-properties input {
+    width: 100%;
+    padding: 5px;
+    margin-top: 5px;
+}

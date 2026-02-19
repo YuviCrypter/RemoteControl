@@ -1,0 +1,106 @@
+{
+    "Arrows": {
+        "items": [
+            {
+                "i": "up_button",
+                "x": 100,
+                "y": 0,
+                "icon": "\u2191",
+                "keybinds": {
+                    "default": "ArrowUp",
+                    "player1": "ArrowUp",
+                    "player2": "w",
+                    "player3": "i"
+                }
+            },
+            {
+                "i": "down_button",
+                "x": 100,
+                "y": 100,
+                "icon": "\u2193",
+                "keybinds": {
+                    "default": "ArrowDown",
+                    "player1": "ArrowDown",
+                    "player2": "s",
+                    "player3": "k"
+                }
+            },
+            {
+                "i": "left_button",
+                "x": 0,
+                "y": 100,
+                "icon": "\u2190",
+                "keybinds": {
+                    "default": "ArrowLeft",
+                    "player1": "ArrowLeft",
+                    "player2": "a",
+                    "player3": "j"
+                }
+            },
+            {
+                "i": "right_button",
+                "x": 200,
+                "y": 100,
+                "icon": "\u2192",
+                "keybinds": {
+                    "default": "ArrowRight",
+                    "player1": "ArrowRight",
+                    "player2": "d",
+                    "player3": "l"
+                }
+            }
+        ]
+    },
+    "default": {
+        "items": [
+            {
+                "i": "up_button",
+                "x": 100,
+                "y": 0,
+                "icon": "\u2191",
+                "keybinds": {
+                    "default": "ArrowUp",
+                    "player1": "ArrowUp",
+                    "player2": "w",
+                    "player3": "i"
+                }
+            },
+            {
+                "i": "down_button",
+                "x": 100,
+                "y": 100,
+                "icon": "\u2193",
+                "keybinds": {
+                    "default": "ArrowDown",
+                    "player1": "ArrowDown",
+                    "player2": "s",
+                    "player3": "k"
+                }
+            },
+            {
+                "i": "left_button",
+                "x": 0,
+                "y": 100,
+                "icon": "\u2190",
+                "keybinds": {
+                    "default": "ArrowLeft",
+                    "player1": "ArrowLeft",
+                    "player2": "a",
+                    "player3": "j"
+                }
+            },
+            {
+                "i": "right_button",
+                "x": 200,
+                "y": 100,
+                "icon": "\u2192",
+                "keybinds": {
+                    "default": "ArrowRight",
+                    "player1": "ArrowRight",
+                    "player2": "d",
+                    "player3": "l"
+                }
+            }
+        ]
+    }
+}
