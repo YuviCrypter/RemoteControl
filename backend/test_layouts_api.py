@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from main import app, LAYOUTS_FILE, save_layouts
+from main import app, LAYOUTS_FILE, save_layouts, all_layouts as main_all_layouts
 import json
 from pathlib import Path
 
@@ -8,15 +8,15 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def run_around_tests():
-    # Setup: Ensure layouts.json is clean before each test
+    # Setup: Ensure layouts.json is clean and in-memory dict is empty before each test
     if LAYOUTS_FILE.exists():
         LAYOUTS_FILE.unlink()
-    # Ensure all_layouts in memory is also empty
-    app.state.all_layouts = {}
+    main_all_layouts.clear()
     yield
     # Teardown: Clean up after each test
     if LAYOUTS_FILE.exists():
         LAYOUTS_FILE.unlink()
+    main_all_layouts.clear()
 
 def test_get_empty_layouts():
     response = client.get("/layouts")

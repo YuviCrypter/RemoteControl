@@ -1,14 +1,240 @@
-import os
-import asyncio
+import sys
+import ctypes
+from contextlib import asynccontextmanager
+from ctypes import wintypes
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import uinput
 import json
 from pathlib import Path
 
-app = FastAPI()
+# ── Windows platform guard ────────────────────────────────────────────────────
+if sys.platform != "win32":
+    raise RuntimeError(
+        "This backend uses the Windows SendInput API and must be run on Windows. "
+        "For Linux, use the python-uinput branch."
+    )
 
-# Allow your React dev server to talk to the backend
+# ── Win32 SendInput structures ────────────────────────────────────────────────
+# ── Win32 SendInput structures ────────────────────────────────────────────────
+# CRITICAL: The union MUST include all three members (MOUSEINPUT, KEYBDINPUT,
+# HARDWAREINPUT) so ctypes computes the correct sizeof(INPUT) == Win32's value.
+# With only KEYBDINPUT, the struct is undersized and Windows silently rejects
+# every SendInput call (returns 0, GetLastError() == ERROR_INVALID_PARAMETER).
+
+KEYEVENTF_KEYUP       = 0x0002
+KEYEVENTF_EXTENDEDKEY = 0x0001
+
+EXTENDED_KEYS = {
+    0x25, 0x26, 0x27, 0x28,  # Arrows
+    0x2D, 0x2E,               # Insert / Delete
+    0x24, 0x23,               # Home / End
+    0x21, 0x22,               # PageUp / PageDown
+    0x5B, 0x5C,               # Win keys
+    0x6F,                     # Numpad /
+}
+
+PUL = ctypes.POINTER(ctypes.c_ulong)
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx",          ctypes.c_long),
+        ("dy",          ctypes.c_long),
+        ("mouseData",   ctypes.c_ulong),
+        ("dwFlags",     ctypes.c_ulong),
+        ("time",        ctypes.c_ulong),
+        ("dwExtraInfo", PUL),
+    ]
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk",         ctypes.c_ushort),
+        ("wScan",       ctypes.c_ushort),
+        ("dwFlags",     ctypes.c_ulong),
+        ("time",        ctypes.c_ulong),
+        ("dwExtraInfo", PUL),
+    ]
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg",    ctypes.c_ulong),
+        ("wParamL", ctypes.c_short),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+class _INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+class INPUT(ctypes.Structure):
+    _fields_ = [
+        ("type",   ctypes.c_ulong),
+        ("_input", _INPUT_UNION),
+    ]
+
+INPUT_KEYBOARD = 1
+_SendInput = ctypes.windll.user32.SendInput
+
+# Sanity-check: sizeof(INPUT) MUST be 40 on 64-bit Windows. If not, keys won't work.
+_sz = ctypes.sizeof(INPUT)
+print(f"[INIT] sizeof(INPUT)={_sz} {'✓ CORRECT' if _sz == 40 else '✗ WRONG — struct mismatch!'}")
+
+
+KEYEVENTF_SCANCODE = 0x0008   # Use hardware scan code instead of VK code
+
+def send_key(vk_code: int, action: str) -> None:
+    """Inject a key event via Win32 SendInput using hardware scan codes.
+
+    Scan-code mode (KEYEVENTF_SCANCODE) is required for DirectInput / Raw Input
+    games, which bypass the message queue and read hardware scan codes directly.
+    Regular apps (Notepad, browsers, etc.) also accept scan-code events fine.
+    """
+    # Convert VK code → hardware scan code automatically
+    scan_code = ctypes.windll.user32.MapVirtualKeyW(vk_code, 0)  # MAPVK_VK_TO_VSC
+
+    flags = KEYEVENTF_SCANCODE
+    if vk_code in EXTENDED_KEYS:
+        flags |= KEYEVENTF_EXTENDEDKEY
+    if action == "up":
+        flags |= KEYEVENTF_KEYUP
+
+    extra = ctypes.c_ulong(0)
+    inp = INPUT(
+        type=INPUT_KEYBOARD,
+        _input=_INPUT_UNION(
+            ki=KEYBDINPUT(
+                wVk=0,           # Must be 0 when KEYEVENTF_SCANCODE is set
+                wScan=scan_code,
+                dwFlags=flags,
+                time=0,
+                dwExtraInfo=ctypes.pointer(extra),
+            )
+        ),
+    )
+    _SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+
+
+# ── Key map: JS key name → Windows Virtual Key code ──────────────────────────
+# Reference: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+KEY_MAP: dict[str, int] = {
+    # ── Arrows ──
+    "ArrowLeft":  0x25,
+    "ArrowUp":    0x26,
+    "ArrowRight": 0x27,
+    "ArrowDown":  0x28,
+    # ── Common control keys ──
+    "Backspace":   0x08,
+    "Tab":         0x09,
+    "Enter":       0x0D,
+    "Shift":       0x10,
+    "Control":     0x11,
+    "Alt":         0x12,
+    "Pause":       0x13,
+    "CapsLock":    0x14,
+    "Escape":      0x1B,
+    " ":           0x20,  # Space
+    "PageUp":      0x21,
+    "PageDown":    0x22,
+    "End":         0x23,
+    "Home":        0x24,
+    "PrintScreen": 0x2C,
+    "Insert":      0x2D,
+    "Delete":      0x2E,
+    # ── Digits ──
+    "0": 0x30, "1": 0x31, "2": 0x32, "3": 0x33, "4": 0x34,
+    "5": 0x35, "6": 0x36, "7": 0x37, "8": 0x38, "9": 0x39,
+    # ── Letters (VK codes = uppercase ASCII) ──
+    "a": 0x41, "b": 0x42, "c": 0x43, "d": 0x44, "e": 0x45,
+    "f": 0x46, "g": 0x47, "h": 0x48, "i": 0x49, "j": 0x4A,
+    "k": 0x4B, "l": 0x4C, "m": 0x4D, "n": 0x4E, "o": 0x4F,
+    "p": 0x50, "q": 0x51, "r": 0x52, "s": 0x53, "t": 0x54,
+    "u": 0x55, "v": 0x56, "w": 0x57, "x": 0x58, "y": 0x59,
+    "z": 0x5A,
+    # ── Uppercase letters (same VK) ──
+    "A": 0x41, "B": 0x42, "C": 0x43, "D": 0x44, "E": 0x45,
+    "F": 0x46, "G": 0x47, "H": 0x48, "I": 0x49, "J": 0x4A,
+    "K": 0x4B, "L": 0x4C, "M": 0x4D, "N": 0x4E, "O": 0x4F,
+    "P": 0x50, "Q": 0x51, "R": 0x52, "S": 0x53, "T": 0x54,
+    "U": 0x55, "V": 0x56, "W": 0x57, "X": 0x58, "Y": 0x59,
+    "Z": 0x5A,
+    # ── Special / modifier ──
+    "Meta":         0x5B,  # Left Win key
+    "ContextMenu":  0x5D,
+    "NumLock":      0x90,
+    "ScrollLock":   0x91,
+    "ShiftLeft":    0xA0,
+    "ShiftRight":   0xA1,
+    "ControlLeft":  0xA2,
+    "ControlRight": 0xA3,
+    "AltLeft":      0xA4,
+    "AltRight":     0xA5,
+    # ── Function keys ──
+    "F1":  0x70, "F2":  0x71, "F3":  0x72, "F4":  0x73,
+    "F5":  0x74, "F6":  0x75, "F7":  0x76, "F8":  0x77,
+    "F9":  0x78, "F10": 0x79, "F11": 0x7A, "F12": 0x7B,
+    # ── Punctuation / OEM keys ──
+    ";":  0xBA, "=":  0xBB, ",":  0xBC, "-":  0xBD,
+    ".":  0xBE, "/":  0xBF, "`":  0xC0, "[":  0xDB,
+    "\\": 0xDC, "]":  0xDD, "'":  0xDE,
+}
+
+
+# ── Layouts persistence ───────────────────────────────────────────────────────
+LAYOUTS_FILE = Path("layouts.json")
+all_layouts: dict = {}
+
+def load_layouts() -> dict:
+    if LAYOUTS_FILE.exists():
+        try:
+            with open(LAYOUTS_FILE, "r") as f:
+                existing = json.load(f)
+                if existing:
+                    return existing
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"ERROR: Could not load layouts.json: {e}. Using defaults.")
+
+    default_layouts = {
+        "Arrows": {
+            "items": [
+                {"i": "up_button",    "x": 100, "y": 0,   "icon": "↑", "keybinds": {"default": "ArrowUp",    "player1": "ArrowUp",    "player2": "w", "player3": "i"}},
+                {"i": "down_button",  "x": 100, "y": 100, "icon": "↓", "keybinds": {"default": "ArrowDown",  "player1": "ArrowDown",  "player2": "s", "player3": "k"}},
+                {"i": "left_button",  "x": 0,   "y": 100, "icon": "←", "keybinds": {"default": "ArrowLeft",  "player1": "ArrowLeft",  "player2": "a", "player3": "j"}},
+                {"i": "right_button", "x": 200, "y": 100, "icon": "→", "keybinds": {"default": "ArrowRight", "player1": "ArrowRight", "player2": "d", "player3": "l"}},
+            ]
+        },
+        "default": {
+            "items": [
+                {"i": "up_button",    "x": 100, "y": 0,   "icon": "↑", "keybinds": {"default": "ArrowUp",    "player1": "ArrowUp",    "player2": "w", "player3": "i"}},
+                {"i": "down_button",  "x": 100, "y": 100, "icon": "↓", "keybinds": {"default": "ArrowDown",  "player1": "ArrowDown",  "player2": "s", "player3": "k"}},
+                {"i": "left_button",  "x": 0,   "y": 100, "icon": "←", "keybinds": {"default": "ArrowLeft",  "player1": "ArrowLeft",  "player2": "a", "player3": "j"}},
+                {"i": "right_button", "x": 200, "y": 100, "icon": "→", "keybinds": {"default": "ArrowRight", "player1": "ArrowRight", "player2": "d", "player3": "l"}},
+            ]
+        },
+    }
+    save_layouts(default_layouts)
+    return default_layouts
+
+
+def save_layouts(layouts_data: dict) -> None:
+    try:
+        with open(LAYOUTS_FILE, "w") as f:
+            json.dump(layouts_data, f, indent=4)
+    except IOError as e:
+        print(f"ERROR: Could not write layouts.json: {e}")
+
+
+# ── FastAPI app (lifespan replaces deprecated @on_event) ─────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global all_layouts
+    all_layouts = load_layouts()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,65 +243,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Layouts management
-LAYOUTS_FILE = Path("layouts.json")
-all_layouts = {}
 
-# Load layouts from file on startup
-def load_layouts():
-    if LAYOUTS_FILE.exists():
-        try:
-            with open(LAYOUTS_FILE, "r") as f:
-                file_content = f.read() # Read content
-                print(f"DEBUG: Reading layouts.json content: {file_content[:500]}...") # Print first 500 chars
-                f.seek(0) # Reset file pointer for json.load
-                existing_layouts = json.load(f)
-                if existing_layouts:
-                    return existing_layouts
-        except json.JSONDecodeError as e:
-            print(f"DEBUG ERROR: layouts.json is malformed: {e}. Content starts with: {file_content[:100]}...") # More detailed error
-            print(f"ERROR: layouts.json is malformed. Initializing with default layout.")
-        except IOError as e:
-            print(f"ERROR: Could not read layouts.json: {e}. Initializing with default layout.")
-    
-    # Default initial layout if file doesn't exist or is empty/invalid
-    default_layouts = {
-        "Arrows": {
-            "items": [
-                {"i": "up_button", "x": 100, "y": 0, "icon": "↑", "keybinds": {"default": "ArrowUp", "player1": "ArrowUp", "player2": "w", "player3": "i"}},
-                {"i": "down_button", "x": 100, "y": 100, "icon": "↓", "keybinds": {"default": "ArrowDown", "player1": "ArrowDown", "player2": "s", "player3": "k"}},
-                {"i": "left_button", "x": 0, "y": 100, "icon": "←", "keybinds": {"default": "ArrowLeft", "player1": "ArrowLeft", "player2": "a", "player3": "j"}},
-                {"i": "right_button", "x": 200, "y": 100, "icon": "→", "keybinds": {"default": "ArrowRight", "player1": "ArrowRight", "player2": "d", "player3": "l"}},
-            ]
-        },
-        "default": { # Add this
-            "items": [
-                {"i": "up_button", "x": 100, "y": 0, "icon": "↑", "keybinds": {"default": "ArrowUp", "player1": "ArrowUp", "player2": "w", "player3": "i"}},
-                {"i": "down_button", "x": 100, "y": 100, "icon": "↓", "keybinds": {"default": "ArrowDown", "player1": "ArrowDown", "player2": "s", "player3": "k"}},
-                {"i": "left_button", "x": 0, "y": 100, "icon": "←", "keybinds": {"default": "ArrowLeft", "player1": "ArrowLeft", "player2": "a", "player3": "j"}},
-                {"i": "right_button", "x": 200, "y": 100, "icon": "→", "keybinds": {"default": "ArrowRight", "player1": "ArrowRight", "player2": "d", "player3": "l"}},
-            ]
-        }
-    }
-    try:
-        save_layouts(default_layouts) # Save the default layout to file
-    except IOError as e:
-        print(f"CRITICAL ERROR: Could not save default layouts to layouts.json: {e}. Layouts will not be persistent.")
-    return default_layouts
-
-def save_layouts(layouts_data):
-    print(f"DEBUG: Saving layouts data: {json.dumps(layouts_data, indent=4)[:500]}...") # Print data being saved
-    try:
-        with open(LAYOUTS_FILE, "w") as f:
-            json.dump(layouts_data, f, indent=4)
-    except IOError as e:
-        print(f"CRITICAL ERROR: Could not write to layouts.json: {e}. Changes may not be persistent.")
-
-@app.on_event("startup")
-async def startup_event():
-    global all_layouts
-    all_layouts = {} # Explicitly clear before loading
-    all_layouts = load_layouts()
+# ── Layout REST endpoints ─────────────────────────────────────────────────────
+@app.get("/")
+def read_root():
+    return {"status": "Backend is running (Windows — SendInput)."}
 
 @app.get("/layouts")
 async def get_all_layouts():
@@ -103,110 +275,76 @@ async def delete_layout(layout_name: str):
         return {"message": f"Layout '{layout_name}' deleted successfully!"}
     raise HTTPException(status_code=404, detail="Layout not found")
 
-@app.get("/")
-def read_root():
-    return {"status": "Backend is running and ready for remote control."}
 
-connected_players = set()
-player_counter = 0
+# ── Player session ────────────────────────────────────────────────────────────
+connected_players: set = set()
+player_counter: int = 0
 
-# Define the keys that can be simulated
-# Dynamically get all possible KEY_ and BTN_ events from the uinput module
-keys = [getattr(uinput, key) for key in dir(uinput) if key.startswith('KEY_') or key.startswith('BTN_')]
-try:
-    device = uinput.Device(keys)
-except Exception as e:
-    print(f"Could not initialize uinput device: {e}")
-    print("Running without remote control functionality.")
-    device = None
-
-# --- Remote Control WebSocket ---
-# NOTE: This application must be run with root privileges for python-uinput to work
-# For example: sudo /path/to/your/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
-# Also, ensure the user running the script is in the 'input' group to have permissions for /dev/uinput
-@app.websocket("/ws/{player_id}")
-async def websocket_endpoint(websocket: WebSocket, player_id: int, layout_name: str = "default"):
-    await websocket.accept()
-    connected_players.add(player_id)
-    print(f"Player {player_id} connected. Total players: {len(connected_players)}")
-
-    # Get the layout for this player
-    current_layout_data = all_layouts.get(layout_name)
-    if not current_layout_data or not current_layout_data.get("items"):
-        print(f"Layout '{layout_name}' not found or empty for player {player_id}. Disconnecting.")
-        await websocket.close(code=1008, reason="Layout not found or invalid")
-        return
-
-    layout_items_map = {item["i"]: item for item in current_layout_data["items"]}
-
-    try:
-        while True:
-            data = await websocket.receive_json()
-            item_id = data.get("itemId") # Frontend will now send itemId instead of key
-            action = data.get("action")
-            print(f"Received from player {player_id}: itemId={item_id}, action={action}")
-
-            if not item_id:
-                print("No itemId received, skipping.")
-                continue
-
-            layout_item = layout_items_map.get(item_id)
-            if not layout_item:
-                print(f"Item ID '{item_id}' not found in layout '{layout_name}'.")
-                continue
-
-            keybinds = layout_item.get("keybinds", {})
-            # Determine the key to press based on player_id and fallback to default
-            key_to_press = keybinds.get(f"player{player_id}") or keybinds.get("default")
-
-            if not key_to_press:
-                print(f"No keybind found for item '{item_id}' for player {player_id} or default.")
-                continue
-
-            if device:
-                uinput_key_name = key_to_press.upper()
-                # Handle special keys that might not directly map to KEY_ prefix
-                # This needs to be more robust, potentially a mapping table for uinput
-                if uinput_key_name == "ARROWUP": uinput_key_name = "UP"
-                elif uinput_key_name == "ARROWDOWN": uinput_key_name = "DOWN"
-                elif uinput_key_name == "ARROWLEFT": uinput_key_name = "LEFT"
-                elif uinput_key_name == "ARROWRIGHT": uinput_key_name = "RIGHT"
-                elif uinput_key_name == " ": uinput_key_name = "SPACE"
-                elif uinput_key_name == "SHIFT": uinput_key_name = "LEFTSHIFT" # Assuming common shift
-                elif uinput_key_name == "CONTROL": uinput_key_name = "LEFTCTRL" # Assuming common control
-                elif uinput_key_name == "ALT": uinput_key_name = "LEFTALT" # Assuming common alt
-                elif uinput_key_name == "META": uinput_key_name = "LEFTMETA" # Assuming common meta (windows/command)
-
-
-                key_to_press_uinput = getattr(uinput, f"KEY_{uinput_key_name}", None)
-                if not key_to_press_uinput:
-                     key_to_press_uinput = getattr(uinput, uinput_key_name, None) # Try direct name if not KEY_
-                
-                if key_to_press_uinput and key_to_press_uinput in keys:
-                    if action == "down":
-                        device.emit(key_to_press_uinput, 1)  # Key press
-                    elif action == "up":
-                        device.emit(key_to_press_uinput, 0)  # Key release
-                else:
-                    print(f"Unknown or un-mapped uinput key: {uinput_key_name} (derived from '{key_to_press}')")
-            else:
-                print("uinput device not available. Skipping key event.")
-
-
-    except WebSocketDisconnect:
-        connected_players.remove(player_id)
-        print(f"Player {player_id} disconnected. Total players: {len(connected_players)}")
-
-# This part of the code is not ideal for production, but for a simple case
-# it can help manage players. A better approach would be a proper session management system.
 @app.post("/join")
 async def join_game():
     global player_counter
     player_counter += 1
     return {"player_id": player_counter}
 
+
+# ── WebSocket remote-control endpoint ────────────────────────────────────────
+@app.websocket("/ws/{player_id}")
+async def websocket_endpoint(websocket: WebSocket, player_id: int, layout: str = "default"):
+    await websocket.accept()
+    connected_players.add(player_id)
+
+    # Self-healing: if in-memory layouts got wiped (e.g. tests ran, or lifespan issue), reload from disk
+    global all_layouts
+    if not all_layouts:
+        print("[WS] all_layouts is empty — reloading from disk.")
+        all_layouts = load_layouts()
+
+    print(f"[WS] Player {player_id} connected | layout='{layout}' | available={list(all_layouts.keys())}")
+
+    current_layout_data = all_layouts.get(layout)
+    if not current_layout_data or not current_layout_data.get("items"):
+        print(f"[WS] ERROR: Layout '{layout}' not found. Available: {list(all_layouts.keys())}. Closing.")
+        await websocket.close(code=1008, reason="Layout not found or invalid")
+        connected_players.discard(player_id)
+        return
+
+    layout_items_map = {item["i"]: item for item in current_layout_data["items"]}
+    print(f"[WS] Layout '{layout}' OK — {len(layout_items_map)} buttons: {list(layout_items_map.keys())}")
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            item_id = data.get("itemId")
+            action  = data.get("action")  # "down" | "up"
+
+            if not item_id:
+                continue
+
+            layout_item = layout_items_map.get(item_id)
+            if not layout_item:
+                print(f"[WS] Unknown item '{item_id}' in layout '{layout}'.")
+                continue
+
+            keybinds = layout_item.get("keybinds", {})
+            key_name = keybinds.get(f"player{player_id}") or keybinds.get("default")
+
+            if not key_name:
+                print(f"[WS] No keybind for item '{item_id}', player {player_id}.")
+                continue
+
+            vk_code = KEY_MAP.get(key_name)
+            if vk_code is None:
+                print(f"[WS] Key '{key_name}' not in KEY_MAP — add it to main.py if needed.")
+                continue
+
+            send_key(vk_code, action)
+            print(f"[WS] {action.upper()} → '{key_name}' (VK={hex(vk_code)})")
+
+    except WebSocketDisconnect:
+        connected_players.discard(player_id)
+        print(f"[WS] Player {player_id} disconnected. Total: {len(connected_players)}")
+
+
 if __name__ == "__main__":
     import uvicorn
-    import os
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

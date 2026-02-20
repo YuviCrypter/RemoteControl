@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-python-uinput
 websockets
 pytest
 httpx
